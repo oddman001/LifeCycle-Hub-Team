@@ -232,7 +232,7 @@ const foodFields = (form, specification, editing = false, source = "label") => {
   const checkDays = get("checkDays") === "" ? null : Number(get("checkDays"));
   const shelfLifeDays = get("expiryMode")==="date" || get("shelfLifeDays")==="" ? null : Number(get("shelfLifeDays"));
   const mode = get("expiryMode");
-  const shelfLifeBase = mode === "duration" ? "production" : mode === "date" ? "" : get("shelfLifeBase");
+  const shelfLifeBase = mode === "duration" ? (get("shelfLifeBase")==="purchase" ? "purchase" : "production") : mode === "date" ? "" : get("shelfLifeBase");
   const baseDate = shelfLifeBase==="production" ? get("producedOn") : get("purchasedOn");
   const validAmount = (v) => v == null || (Number.isFinite(v) && v >= 0 && v <= 1000000);
   if (dates.some((key) => get(key) && !foodDate(get(key))) ||
@@ -271,7 +271,10 @@ const foodShelfFields = (key,row) =>
   foodDropdown(key("expiryMode"),"有效期填写方式",
     foodOption("date","到期日期",row?.expirySource==="shelf" ? "duration" : row?.expiresOn ? "date" : row?.shelfLifeDays ? "duration" : "date")+
     foodOption("duration","保质期",row?.expirySource==="shelf" ? "duration" : row?.expiresOn ? "date" : row?.shelfLifeDays ? "duration" : "date"),'data-food-expiry-mode')+
-  foodInput(key("shelfLifeDays"),"保质期（天，按生产日期自动计算）",row?.shelfLifeDays,'type="number" min="1" max="36500"');
+  foodInput(key("shelfLifeDays"),"保质期（天）",row?.shelfLifeDays,'type="number" min="1" max="36500"')+
+  foodDropdown(key("shelfLifeBase"),"保质期起点",
+    foodOption("production","生产日期",row?.shelfLifeBase==="purchase" ? "purchase" : "production")+
+    foodOption("purchase","购买日期",row?.shelfLifeBase==="purchase" ? "purchase" : "production"),'data-food-expiry-base');
 
 async function foodReferenceData(db) {
   return Promise.all([
@@ -389,7 +392,7 @@ async function foodNew(db, form, url) {
   if (form) {
     const id = await foodCreate(db,form);
     return id ? foodRedirect(foodRoot+"/"+id+"?saved=1&added=1") :
-      foodError("请检查食品档案、位置、日期和数量。填写数字数量时也需要填写单位。",foodRoot+"/new");
+      foodError("请检查食品档案、位置、日期和数量。填写数字数量时也需要填写单位；选择保质期时，请填写保质期天数并补上起点日期（生产日期或购买日期）。",foodRoot+"/new");
   }
   const [profiles,locations,categories] = await foodReferenceData(db);
   const requested=url?.searchParams.get("foodId")||"";
@@ -637,7 +640,7 @@ async function foodUpdateBatch(db,row,form,intake=null) {
     const disposition=r("disposition");
     if (!changed||!location||r("notes").length>2000||
       (!["active","consumed","discarded"].includes(disposition)&&!(disposition==="portioned"&&row.disposition==="portioned"))) {
-      return foodError("请检查数量、日期、保质期计算起点和储存位置。",editPath);
+      return foodError("请检查数量、日期、保质期天数和计算起点（生产日期或购买日期），以及储存位置。",editPath);
     }
     Object.assign(fields,changed,{locationId:location.id,disposition:disposition==="active"?changed.disposition:disposition});
     if (row.disposition==="portioned") {
@@ -687,21 +690,76 @@ async function foodUpdateBatch(db,row,form,intake=null) {
 }
 
 const foodPurchaseLead = /^我?\s*(?:(?:今天|昨天|前天)\s*)?(?:刚刚|刚才|刚|刚买回来|又)?\s*(?:购买了?|买了?|购入了?|添了)/;
-const foodQuantityUnit = "千克|公斤|毫升|斤|克|升|个|颗|盒|袋|瓶|罐|桶|箱|包|片";
+const foodPurchaseVerb = /(?:购买(?:了)?|买了?|购入(?:了)?|添了|买回(?:来|家)?|带回(?:来|家)?|入手(?:了)?|下单(?:了)?|收到(?:了)?|领了)/;
+const foodQuantityUnit = "千克|公斤|毫升|斤|克|升|个|颗|盒|袋|瓶|罐|桶|箱|包|片|把|只|条|块|根|支|听|提|串|杯|碗|份|张|双";
+const foodQuantityCount = "[0-9]+(?:\\.[0-9]+)?|[零一二两三四五六七八九十]+|半";
+const foodStopWords = /^(?:我|我们|今天|昨天|前天|刚才|刚刚|下午|上午|晚上|早上|下班|上班|周末|路过|去了?|在|从|把|这|那|又|还|就|也|才|正好|刚好|顺手|顺便|因为|所以|然后|接着|最后|看到|看见|发现|遇到|超市|商店|商场|菜市场|市场|网上|家里|另外|此外|还有|再)$/;
+const foodItemSeparator = /[，,。；;、：:]|放在|放入|放到|冷藏|冷冻|储存|保质期|有效期|生产日期|到期|过期|吃完|喝完|用了|开封/;
+function foodCleanItem(value) {
+  let name = String(value ?? "").trim();
+  name = name.split(foodItemSeparator)[0].trim();
+  name = name.replace(/^[，,、。；;：:\s]+/,"");
+  name = name.replace(/^(?:的|了|在|是|有|这|那)\s*/,"");
+  name = name.replace(/\s*(?:已经?|正)?(?:在)?(?:打折|促销|特价|优惠|便宜|搞活动)\s*$/,"").trim();
+  return name;
+}
+function foodNameFromPart(part) {
+  const match = part.match(new RegExp(`(${foodQuantityCount})\\s*(${foodQuantityUnit})\\s*(.*)$`));
+  if (match) {
+    const amount = /^[0-9]/.test(match[1]) ? Number(match[1]) : numberOf(match[1]);
+    let name = foodCleanItem(match[3]);
+    if (!name) {
+      const before = part.slice(0, match.index);
+      const seen = before.match(/(?:看到|看见|发现|遇到|家里有|还剩|剩了|常买|常喝|常吃|用的是)\s*([^，,。；;、]{1,40}?)(?=在|打折|促销|特价|卖|就|，|,|$)/);
+      if (seen) name = foodCleanItem(seen[1]);
+    }
+    if (!name) {
+      const before = part.slice(0, match.index).split(/[，,。；;]/).filter(Boolean).at(-1) ?? "";
+      name = foodCleanItem(before.replace(foodPurchaseVerb,"").replace(/^(?:就|又|还|也|才|顺手|顺便)\s*/,""));
+    }
+    return { name, amount:Number.isFinite(amount)?amount:"", unit:match[2] };
+  }
+  const verb = part.match(foodPurchaseVerb);
+  if (verb) return { name:foodCleanItem(part.slice(verb.index + verb[0].length)), amount:"", unit:"" };
+  // No quantity and no purchase verb: accept a short plain item name such as "牛奶保质期3天"
+  // or a bare "酸奶", but never narrative fragments like "今天下午下班路过超市".
+  const plain = foodCleanItem(part);
+  if (plain && plain.length <= 24 && !/[买购放吃喝用查看剩]|超市|下班|上班|路过|今天|昨天|刚才|下午|晚上|打折|促销/.test(plain)) {
+    return { name:plain, amount:"", unit:"" };
+  }
+  return null;
+}
 function foodTextCandidates(text, locations, today) {
   const offset = {今天:0, 昨天:-1, 前天:-2};
-  return intakeCleanSpeech(text).split(/[\n；;。]|和(?=[0-9一二两三四五六七八九十])/).map((v)=>v.trim()).filter(Boolean).slice(0,8).map((line) => {
-    const where = [...locations].sort((a,b)=>b.name.length-a.name.length).find((loc)=>line.includes(loc.name));
-    const relative = Object.keys(offset).find((word)=>line.includes(word));
+  const rows = [];
+  const sentences = intakeCleanSpeech(text).split(/[\n；;。！!？?]+/).map((v)=>v.trim()).filter(Boolean);
+  for (const sentence of sentences) {
+    const where = [...locations].sort((a,b)=>b.name.length-a.name.length).find((loc)=>sentence.includes(loc.name));
+    const relative = Object.keys(offset).find((word)=>sentence.includes(word));
     const purchase = relative ? foodAddDays(today,offset[relative]) : "";
-    const item = line.replace(foodPurchaseLead,"")
-      .split(/[，,]|放在|放入|冷藏于|储存于|保质期|[0-9零一二两三四五六七八九十百千]+(?:天|日)后(?:过期|到期)|(?:今|明|后)天(?:过期|到期)|\d{1,4}(?:年|月|-)/)[0].trim();
-    const match = item.match(new RegExp("^([0-9]+(?:\\.[0-9]+)?|[零一二两三四五六七八九十]+)\\s*(" + foodQuantityUnit + ")(.+)$"));
-    const amount = match ? (/^[0-9]/.test(match[1]) ? Number(match[1]) : numberOf(match[1])) : null;
-    return { name:(match?.[3].trim() || item).slice(0,120), purchase,
-      amount:Number.isFinite(amount) ? amount : "",
-      unit:match?.[2] ?? "", location:where?.id ?? "unassigned", source:line };
-  });
+    // 查询句要整句判断，否则会被下面的"还有"拆词切成"牛奶 / 多少"两个候选，
+    // 两个候选又都按整句解析成同一个查询，核对待确认列表里就会出现两张重复卡片。
+    if (/还有多少|查(?:看|询)|还剩多少/.test(sentence)) {
+      rows.push({ name:sentence.replace(/^(查看|查询|冰箱里有)/,"").replace(/还有多少.*$|还剩多少.*$/,"").trim(),
+        purchase, amount:"", unit:"", location:where?.id ?? "unassigned", source:sentence });
+      continue;
+    }
+    const parts = sentence.split(/(?:另外|此外|还有|同时)/)
+      .flatMap((part)=>part.split(new RegExp(`(?:和|跟|以及)(?=(?:${foodQuantityCount})\\s*(?:${foodQuantityUnit}))`)));
+    for (const part of parts) {
+      if (/还有多少|查(?:看|询)|还剩多少/.test(part)) {
+        rows.push({ name:part.replace(/^(查看|查询|冰箱里有)/,"").trim(), purchase, amount:"", unit:"", location:where?.id ?? "unassigned", source:sentence });
+        continue;
+      }
+      const item = foodNameFromPart(part.trim());
+      if (!item) continue;
+      const name = item.name.slice(0,120);
+      if (!name || foodStopWords.test(name)) continue;
+      if (/(?:超市|打折|促销|路过|下班|上班)/.test(name) && !foodPurchaseVerb.test(name)) continue;
+      rows.push({ name, purchase, amount:item.amount, unit:item.unit, location:where?.id ?? "unassigned", source:sentence });
+    }
+  }
+  return rows.slice(0,8);
 }
 
 async function foodRoute(request, env, url) {

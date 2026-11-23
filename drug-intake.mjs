@@ -28,12 +28,14 @@ async function drugExtract(env,{text,photos,locations,categories,clock,zone}) {
     "采购语句同时包含 每日或一日N次、饭后等用药计划信息时，保留 purchase，另填 planFrequency、planMealTiming。只填原话明确给出的 planDose、planUnit、planTimes。诸如每盒十二包是包装数量，绝不作为单次剂量或每日剂量。拍照只提取库存，用药计划信息留空。",
     "明确的一周疗程可填 planDurationDays=7；已服用天数另填 takenDays。今天还没服用用 notTaken=true。每日用量填 planDailyAmount 和 planDailyUnit。日用量与单次剂量、购买日期与疗程开始日期分别对待，不要把购买量当当前库存或推算已经服用的剂量。",
   ].join("\n");
-  const rows=await intakeStructured(env,{
-    model:env.OPENAI_DRUG_MODEL||env.OPENAI_FOOD_MODEL||"gpt-5.4-mini",instructions,store:false,max_output_tokens:4500,
-    input:[{role:"user",content:[{type:"input_text",text:JSON.stringify({text:text||null,localDate:clock.day,timeZone:zone,
-      locations:locations.map(({id,name})=>({id,name})),categories:categories.map(({id,name})=>({id,name}))})},...photos]}],
-    text:{format:{type:"json_schema",name:"drug_intake",strict:true,schema:drugSchema}},
+  const parsed=await intakeStructured(env,{
+    name:"drug_intake",schema:drugSchema,instructions,
+    model:intakeModuleModel(env,env.OPENAI_DRUG_MODEL||env.OPENAI_FOOD_MODEL,"gpt-5.4-mini"),
+    text:JSON.stringify({text:text||null,localDate:clock.day,timeZone:zone,
+      locations:locations.map(({id,name})=>({id,name})),categories:categories.map(({id,name})=>({id,name}))}),
+    photos,
   });
+  const rows=Array.isArray(parsed?.items)?parsed.items:[];
   const safe=(v,max=240)=>typeof v==="string"?v.replace(/[\r\n]+/g," ").trim().slice(0,max):"";
   return rows.map((row)=>({
     ...Object.fromEntries(drugIntakeFields.map((key)=>[key,safe(row[key])])),
@@ -55,7 +57,7 @@ function drugPurchaseInstructions(line,prefix) {
     ? {amount:multiplier*perPack,unit:pack[3],packageSpec:`${perPack}${pack[3]}/${pack[1]}`}:{};
   const frequencyMatch=line.match(new RegExp("(?:一日|每日|每天|一天)\\s*"+qty+"\\s*次"));
   const frequency=drugReadCount(frequencyMatch?.[1]);
-  const dose=line.match(new RegExp("(?:单次|每次)\\s*"+qty+"\\s*(包|袋|片|粒|毫升|支)"));
+  const dose=line.match(new RegExp("(?:单次|每次|一次)\\s*"+qty+"\\s*(包|袋|片|粒|毫升|支)"));
   const daily=line.match(new RegExp("(?:一日|每日|每天|一天)\\s*(?:要|需)?\\s*(?:吃|服用|服)?\\s*"+qty+"\\s*(包|袋|片|粒|毫升|支)"));
   const dailyAmount=drugReadCount(daily?.[1]);
   const singleDaily=dailyAmount===1&&["包","袋","片","粒","支"].includes(daily?.[2])&&
@@ -85,22 +87,25 @@ function drugRuleRows(text,locations,clock) {
   }
   return lines.slice(0,8).map((line)=>{
     const place=[...locations].sort((a,b)=>b.name.length-a.name.length).find((p)=>line.includes(p.name));
-    const purchase=/^(?:我\s*)?(?:(?:今天|昨天|前天)\s*)?(?:又|刚刚|刚才|刚)?\s*(?:(?:购买|买|购入)了?)/.test(line);
+    const purchase=/(?:购买|买|购入)了?/.test(line);
     const relative=line.match(/今天|昨天|前天/);
     const clause=line.replace(/^(?:我\s*)?(?:(?:今天|昨天|前天)\s*)?(?:又|刚刚|刚才|刚)?\s*(?:购买了?|买了?|购入了?|把|查询|查看)?/,"")
       .split(/[，,]|放在|放入|购买日期|(?:已经|刚刚|刚|已)?开封|(?:还|剩)有|剩余|下个月|停止使用|(?:已|刚)?服用|到期/)[0].trim();
     const units="(毫升|毫克|千克|片|粒|袋|支|瓶|盒|克|包)";
     const count="([0-9]+(?:\\.[0-9]+)?|[一二两三四五六七八九十]+)";
-    const prefix=clause.match(new RegExp("^"+count+"\\s*"+units));
+    // 口语里动词前常有时间、地点（例如“今天上午在药店买了…”），名称从动词之后开始。
+    const verb=clause.match(/(?:购买了?|买了?|购入了?)/);
+    const itemClause=verb?clause.slice(verb.index+verb[0].length).trim():clause;
+    const prefix=itemClause.match(new RegExp("^"+count+"\\s*"+units));
     const remaining=line.match(new RegExp("(?:还剩|剩余|剩下(?:有)?)\\s*"+count+"\\s*"+units));
     const purchaseText=purchase?line.split(/(?:已经|已)\s*(?:吃|服)|(?:还剩|剩余|剩下)/)[0]:line;
     const pieces=[...purchaseText.matchAll(new RegExp("(?:^|[，,、](?:\\s*(?:有|内有|共|一共))?|还有|剩余|剩下|共)\\s*"+count+"\\s*"+units,"g"))];
     const quantity=pieces.at(-1)||prefix;
     const amount=quantity?(/^\d/.test(quantity[1])?Number(quantity[1]):numberOf(quantity[1])):null;
     const date=resolveFoodDates(line,clock.day);
-    const name=drugIntakeName(clause.replace(new RegExp("^"+count+"\\s*"+units),"").replace(/^(?:这个|这瓶|这盒|这种)/,"").trim());
-    const intent=purchase?"purchase":/已服用|刚服用|服用了|吃了/.test(line)?"taken":/停止使用/.test(line)?"stopped":
-      /开封/.test(line)?"open":/还有|剩余|剩下/.test(line)?"adjust":/到期|购买日期/.test(line)?"edit":"query";
+    const name=drugIntakeName(itemClause.replace(new RegExp("^"+count+"\\s*"+units),"").replace(/^(?:这个|这瓶|这盒|这种)/,"").trim());
+    const intent=purchase?"purchase":/已服用|刚服用|服用了|吃了|吃了一次|服了一次|服用了一次|刚吃/.test(line)?"taken":/停止使用/.test(line)?"stopped":
+      /开封/.test(line)?"open":/还有|剩余|剩下|还剩/.test(line)?"adjust":/到期|购买日期/.test(line)?"edit":"query";
     const result={intent,name,locationId:place?.id,amount:Number.isFinite(amount)?amount:null,unit:quantity?.[2]||"",
       purchasedOn:relative?foodAddDays(clock.day,{今天:0,昨天:-1,前天:-2}[relative[0]]):"",
       expiresOn:date.expiresOn,producedOn:date.producedOn,dateEvidence:date.dateEvidence,sourceText:line,
@@ -202,10 +207,10 @@ function drugIntakeReview(draft,candidates,profiles,categories,locations,batches
     cards.join("")+(cards.every((card)=>!card)?'<p class="notice">本次录入已完成。</p>':""));
 }
 async function drugIntake(request,env,user,form) {
-  const db=env.DB,hasAI=Boolean(env.OPENAI_API_KEY?.trim());
+  const db=env.DB,hasAI=intakeConfigured(env),media=intakeMediaEnabled(env);
   const entry=(message="",status=200)=>intakeEntry(hasAI,message,status,{
-    cancelHref:drugRoot,
-    title:drugBack("药品快速录入","拍照、录音或输入一段描述，核对后入库。",moduleEntry(drugRoot+"/intake",drugRoot+"/new","quick")),
+    cancelHref:drugRoot,media,label:intakeLabel(env),
+    title:drugBack("药品快速录入","输入一段描述，核对后入库。",moduleEntry(drugRoot+"/intake",drugRoot+"/new","quick")),
     placeholder:"今天买了一盒演示药品，24片，放在家庭药箱",
   });
   const path=new URL(request.url);
@@ -272,6 +277,7 @@ async function drugIntake(request,env,user,form) {
     const method=foodValue(form,"method")||"text";
     if (!["photo","voice","text"].includes(method)) throw new IntakeError("录入方式无效。");
     if (!hasAI&&method!=="text") throw new IntakeError("AI 服务未配置，请使用文字或手动录入。",503);
+    if (method!=="text"&&!media) throw new IntakeError("当前只启用文字 AI 识别，照片和语音录入未开启。",503);
     let text=foodValue(form,"text");
     if (method==="text"&&(!text||text.length>3000)) throw new IntakeError("请填写不超过 3,000 字的录入内容。");
     const zone=intakeZone(foodValue(form,"timeZone")),clock=intakeClock(zone);

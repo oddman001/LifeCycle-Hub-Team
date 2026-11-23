@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node build.mjs --test-legacy && node --test smoke.test.mjs home-ui.test.mjs browser-filter.test.mjs device.test.mjs subscription.test.mjs entry-ui.test.mjs date-picker-only.test.mjs home-colors.test.mjs",
+    "test": "node build.mjs --test-legacy && node --test smoke.test.mjs home-ui.test.mjs browser-filter.test.mjs device.test.mjs subscription.test.mjs entry-ui.test.mjs date-picker-only.test.mjs home-colors.test.mjs quick-ai.test.mjs free-ai.test.mjs expiry-intake.test.mjs local-auth.test.mjs env-file.test.mjs",
     "start": "node start-team.mjs"
   },
   "engines": {

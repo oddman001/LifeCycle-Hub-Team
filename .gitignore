@@ -18,3 +18,5 @@ node_modules/
 /playwright-report/
 /local-data/
 /uploads/
+.wrangler/
+.cloud-migrations/

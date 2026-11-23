@@ -1,0 +1,21 @@
+# Cloudflare Workers 部署配置（云端演示站）
+#
+# 使用前请先阅读 docs/cloud-deploy.md。
+# 这个文件提交进仓库时只保留占位符：
+#   - database_id 在 `wrangler d1 create lifecycle-hub` 之后回填
+#   - DEMO_PUBLIC_ORIGIN 在首次 `wrangler deploy` 拿到地址之后回填
+#   - DEMO_INVITATION_HASHES 用 `wrangler secret put` 写入，不要写进本文件
+
+name = "lifecycle-hub"
+main = "dist/server/index.js"
+compatibility_date = "2025-06-01"
+
+[vars]
+DEMO_ACCOUNT_MODE = "enabled"
+# 必须是 HTTPS 地址；首次部署完成后改成实际地址（例如 https://lifecycle-hub.<你的子域>.workers.dev）
+DEMO_PUBLIC_ORIGIN = "https://lifecycle-hub.example.workers.dev"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "lifecycle-hub"
+database_id = "00000000-0000-0000-0000-000000000000"

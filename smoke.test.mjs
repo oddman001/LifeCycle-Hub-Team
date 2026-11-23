@@ -208,7 +208,7 @@ globalThis.fetch=async (url,options)=>{
 };
 async function aiPost(form, identity="tester") {
   return worker.fetch(new Request(origin+base+"/intake",{method:"POST",body:form,headers:{origin,"oai-authenticated-user-id":identity}}),
-    {DB,OPENAI_API_KEY:"test-only-key"});
+    {DB,OPENAI_API_KEY:"test-only-key",AI_MEDIA:"enabled"});
 }
 const idOfDraft=(html)=>html.match(/name="draft" value="([^"]+)"/)?.[1];
 const parsePhoto=async (rows)=>{
@@ -646,7 +646,7 @@ globalThis.fetch=async (url,options)=>{
   return Response.json({output:[{content:[{type:"output_text",text:JSON.stringify({items})}]}]});
 };
 try {
-  const mockEnv={OPENAI_API_KEY:"test-only-med-key"};
+  const mockEnv={OPENAI_API_KEY:"test-only-med-key",AI_MEDIA:"enabled"};
   const photo=new FormData();
   photo.set("method","photo");
   photo.append("photos",new File([Uint8Array.of(137,80,78,71)],"package.png",{type:"image/png"}));

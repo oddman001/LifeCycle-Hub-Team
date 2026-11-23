@@ -76,7 +76,8 @@ function wardrobeTagEditor(key, value) {
     choices.map(tag => '<label><input type="checkbox" name="'+key+'" value="'+escape(tag)+'" '+(selected.includes(tag)?"checked":"")+'>'+escape(tag)+'</label>').join("")+
     '<label>补充标签（逗号分隔）<input name="'+key+'Custom" maxlength="240"></label></fieldset>';
 }
-async function wardrobeRoute(request,db,url) {
+async function wardrobeRoute(request,env,url) {
+  const db=env.DB;
   const root="/items/clothing";
   const part=url.pathname.slice(root.length).split("/").filter(Boolean);
   if(part.length>1)return render(hero("找不到档案",backLink(root,"返回衣橱")),404);
@@ -84,9 +85,10 @@ async function wardrobeRoute(request,db,url) {
   const all=(await db.prepare("SELECT i.*,c.* FROM Item i JOIN ClothingDetail c ON c.itemId=i.id WHERE i.category='clothing' AND i.deletedAt IS NULL").all()).results;
   const row=all.find(r=>r.id===id);
   const input=(name,label,value="",type="text")=>'<label>'+label+'<input name="'+name+'" type="'+type+'" maxlength="240" value="'+escape(value)+'"></label>';
-  function page(item={},data={},message="",review=false) {
+  function page(item={},data={},message="",review=false,reviewSource="",reviewFallback="") {
     return render(hero(item.name?escape(item.name):"新增衣物",backLink(root,"返回衣橱"),!item.id?moduleEntry(root+"/new?mode=quick",root+"/new?mode=manual",review?"quick":"manual"):"")+
       (message?'<p role="alert">'+escape(message)+'</p>':"")+
+      (review?'<p class="notice" role="status">'+((reviewSource==="ai")?"AI 识别结果":"文字规则提取结果")+'，请核对后选择购买时间保存。'+(reviewFallback?"（AI 识别暂时失败，已改用本地规则。）":"")+'</p>':"")+
       (item.id?'<p>'+escape(wardrobeAge(data.purchase))+'</p>':"")+
       '<form method="post" action="/items/clothing/'+(item.id||"new")+'" class="panel editor wardrobe-editor component-form"><fieldset>'+input("name","衣物名称",item.name)+wardrobeTimeEditor(data.purchase,review || Boolean(data.purchase?.precision && data.purchase.precision!=="day"))+
       Object.entries(wardrobeFields).map(([key,label])=>wardrobeTags[key] ? wardrobeTagEditor(key,data[key]) : wardrobeChoices[key] ? wardrobeSelect(key,label,data[key]) : input(key,label,data[key])).join("")+
@@ -102,8 +104,8 @@ async function wardrobeRoute(request,db,url) {
     const now=new Date().toISOString(),operation=get("operation");
     if (id==="intake") {
       try {
-        const extracted=wardrobeExtract(get("text"));
-        return page(extracted.item,extracted.data,"请核对识别结果，选择购买时间后保存。",true);
+        const extracted=await wardrobeIntakeExtract(env,get("text"));
+        return page(extracted.item,extracted.data,"",true,extracted.source,extracted.fallback);
       } catch(error) { return render(hero("快速录入","")+ '<p role="alert">'+escape(error.message)+'</p>'+link(root+"/new","重新录入"),400); }
     }
 
@@ -143,6 +145,7 @@ async function wardrobeRoute(request,db,url) {
   }
   if(id==="new"&&url.searchParams.get("mode")==="quick") {
     return render(hero("快速录入",backLink(root,"返回衣橱"),moduleEntry(root+"/new?mode=quick",root+"/new?mode=manual","quick"))+
+      (intakeConfigured(env)?`<p class="notice">已启用 AI 识别（${escape(intakeLabel(env))}），调用失败时自动改用本地规则。识别结果需核对后才会保存。</p>`:'<p class="notice">未配置 AI 识别，本次使用本地文字规则提取。识别结果需核对后才会保存。</p>')+
       '<form class="panel wardrobe-editor component-form" action="'+root+'/intake" method="post"><label>描述衣物<textarea name="text" rows="4" maxlength="2000" required placeholder="两年前买了一件羊毛外套，花了399元，经常穿，需要干洗。"></textarea></label><div class="food-toolbar"><button class="btn btn-primary">提取信息</button>'+entryButton(root,"取消","secondary")+'</div></form>');
   }
   if(id)return page(row||{},row?wardrobeData(row):{});

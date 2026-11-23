@@ -16,8 +16,11 @@ const foodPortions = await read("./food-portions.mjs");
 const intake = await read("./intake-provider.mjs") + "\n" + await read("./intake.mjs");
 const drugs = await read("./drug.mjs") + "\n" + await read("./drug-plan.mjs") + "\n" + await read("./drug-intake.mjs") + "\n" + await read("./drug-safety.mjs");
 const demoAuth = await read("./vendor/noble-argon2.js") + "\n" + await read("./demo-auth.mjs");
+const localAuth = await read("./local-auth.mjs");
 const journal = JSON.parse(await read("./drizzle/meta/_journal.json"));
-const demoMigrations = await Promise.all(journal.entries.filter(({tag}) => !/_demo_/.test(tag)).map(async ({tag}) =>
+// Demo workspaces start from the business schema only. Demo auth and local auth tables are
+// created by their own databases and must not be duplicated into every demo workspace.
+const demoMigrations = await Promise.all(journal.entries.filter(({tag}) => !/_demo_/.test(tag) && !/_local_/.test(tag)).map(async ({tag}) =>
   (await read("./drizzle/" + tag + ".sql")).split("--> statement-breakpoint").map((sql) => sql.trim()).filter(Boolean)));
 const demoWorkspaces = "const demoMigrations = " + JSON.stringify(demoMigrations) + ";\n" + await read("./demo-workspace.mjs");
 const wardrobe = await read("./wardrobe.mjs") + "\n" + await read("./wardrobe-intake.mjs");
@@ -28,6 +31,7 @@ const worker = (await read("./worker.mjs"))
   .replace('import { parseQuantity } from "./quantity.mjs";', () => quantity)
   .replace('import { allFoodRows, ensureFoodData, foodActive, foodTasks, foodTitle, foodRoute } from "./food.mjs";', () => food + "\n" + foodDates + "\n" + intake + "\n" + foodPortions)
   .replace('import { demoAuthRoute } from "./demo-auth.mjs";', () => demoAuth + "\n" + demoWorkspaces)
+  .replace('import { localAuthRoute } from "./local-auth.mjs";', () => localAuth)
   .replace('import { subscriptionExtract } from "./subscription-intake.mjs";', () => subscriptionIntake)
   .replace('import { deviceExtract } from "./device-intake.mjs";', () => deviceIntake)
   .replace('import { wardrobeRoute } from "./wardrobe.mjs";', () => wardrobe)

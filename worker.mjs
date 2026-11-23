@@ -2,6 +2,7 @@ import { subscriptionExtract } from "./subscription-intake.mjs";
 import { deviceExtract } from "./device-intake.mjs";
 import { wardrobeRoute } from "./wardrobe.mjs";
 import { demoAuthRoute } from "./demo-auth.mjs";
+import { localAuthRoute } from "./local-auth.mjs";
 import { catalog, styles, browser } from "./generated.mjs";
 import { parseQuantity } from "./quantity.mjs";
 import { allFoodRows, ensureFoodData, foodActive, foodTasks, foodTitle, foodRoute } from "./food.mjs";
@@ -232,28 +233,39 @@ function editor(category, id, item, detail, flags = {}) {
   const deviceSummary=category==="device"&&id!=="new"?`<div class="notice"><strong>${escape(deviceStatuses[detail.usageStatus]||"使用状态未记录")}</strong> · ${warrantyDays==null?"保修日期未记录":warrantyDays<0?"已过保 "+(-warrantyDays)+" 天":warrantyDays===0?"保修今天到期":"保修剩余 "+warrantyDays+" 天"}${detail.warrantyUntil?"（"+escape(detail.warrantyUntil)+"）":""}</div>`:"";
   const deviceHistory=category==="device"&&id!=="new"?`<section><div class="section-heading"><h2>维修与维护记录</h2></div><div class="panel food-list">${(flags.deviceEvents||[]).map(event=>`<div><span><strong>${escape(event.kind==="deviceRepair"?"维修":"维护")}</strong><small>${escape(event.notes)}</small></span><time>${escape(event.occurredAt.slice(0,10))}</time></div>`).join("")||'<p class="empty">暂无维修或维护记录。</p>'}</div>${item.archivedAt?'<p class="archive">已归档设备仅保留维护历史。</p>':`<form class="panel editor component-form" method="post"><input type="hidden" name="operation" value="deviceMaintenance"><input type="hidden" name="eventId" value="${crypto.randomUUID()}"><fieldset><label>类型<select name="kind"><option value="deviceMaintenance">维护</option><option value="deviceRepair">维修</option></select></label>${input("occurredOn","发生日期",todayFood(),"date","required")}<label class="wide">处理内容<textarea name="maintenanceNotes" rows="3" maxlength="2000" required></textarea></label></fieldset><button class="btn btn-primary">保存记录</button></form>`}</section>`:"";
   const archived = Boolean(item.archivedAt);
+  const reviewNotice = (kind) => {
+    const ai = flags[kind+"Source"] === "ai";
+    const fallback = flags[kind+"Fallback"] ? "（AI 识别暂时失败，已改用本地规则。）" : "";
+    return kind === "subscription"
+      ? `<p class="notice" role="status">${ai?"AI 识别":"文字规则提取"}，请核对费用、周期及日期。未识别的续费和取消截止日期不会自动推算。${fallback}</p>`
+      : `<p class="notice" role="status">${ai?"AI 识别":"文字规则提取"}结果，请核对。未识别字段可留空；保修时长不会自动换算截止日期。${fallback}</p>`;
+  };
   const notice = flags.invalid ? `<p class="notice error" role="alert">${category==="device"?"请检查设备名称、日期、购买价格及字段格式。":"请检查订阅名称、日期、周期费用及账单周期。"}</p>`
     : flags.saved ? '<p class="notice" role="status">档案已保存。</p>' : "";
   return render(hero(item.name ? escape(item.name) : "新增" + meta.title + "档案", (sharedForm?backLink(base,category==="device"?"返回电子设备":"返回会员订阅"):link(base, "‹ " + meta.title, "muted")) + (archived ? " · 已归档" : ""), ["device","subscription"].includes(category)&&id==="new"?moduleEntry(base+"/new?mode=quick",base+"/new?mode=manual",flags.deviceReview||flags.subscriptionReview?"quick":"manual"):"") +
-    notice + (flags.subscriptionReview?'<p class="notice" role="status">文字规则提取，请核对费用、周期及日期。未识别的续费和取消截止日期不会自动推算。</p>':"") + (flags.deviceReview?'<p class="notice" role="status">文字规则提取结果，请核对。未识别字段可留空；保修时长不会自动换算截止日期。</p>':"") + deviceSummary +
+    notice + (flags.subscriptionReview?reviewNotice("subscription"):"") + (flags.deviceReview?reviewNotice("device"):"") + deviceSummary +
     `<form class="panel editor${sharedForm?" component-form":""}" method="post"><fieldset>${input("name",category==="device"?"设备名称":category==="subscription"?"订阅名称":"名称",item.name,"text",'required maxlength="120"')}${inputs}${subscription}${deviceFields}
     <label class="wide">备注<textarea name="notes" rows="4" maxlength="2000">${escape(item.notes)}</textarea></label></fieldset><div class="module-entry"><button class="${sharedForm?"btn btn-primary":"button"}">${["device","subscription"].includes(category)?(id==="new"?(category==="device"?"确认保存设备":"确认保存订阅"):"保存修改"):"保存档案"}</button>${sharedForm?entryButton(base,"取消","secondary"):""}</div></form>` +
     (id !== "new" && !archived ? '<details class="archive"><summary>归档档案</summary><form method="post"><p>归档后可在分类页查看。</p><button class="button secondary" name="operation" value="archive">确认归档</button></form></details>' : "") + (["device","subscription"].includes(category)&&archived?'<form class="archive" method="post"><button class="button secondary" name="operation" value="restore">恢复档案</button></form>':"") + (id!=="new"?deleteControl("档案",item.name):"") + deviceHistory, flags.invalid ? 400 : 200);
 }
 
-async function record(request, db, category, id, url) {
+async function record(request, env, category, id, url) {
+  const db = env.DB;
   const base = "/items/" + category;
   const existing = id === "new" ? null : await db.prepare("SELECT * FROM Item WHERE id=? AND category=? AND deletedAt IS NULL").bind(id, category).first();
   if (id !== "new" && !existing) return render(hero("找不到档案", link(base, "返回分类")), 404);
   const details = existing && await db.prepare(`SELECT * FROM ${tables[category]} WHERE itemId=?`).bind(id).first();
   const deviceEvents=category==="device"&&existing?await foodAll(db,"SELECT kind,occurredAt,notes FROM LifecycleEvent WHERE itemId=? AND kind IN ('deviceRepair','deviceMaintenance') ORDER BY occurredAt DESC,id DESC",id):[];
+  const quickHint = intakeConfigured(env)
+    ? `<p class="notice">已启用 AI 识别（${escape(intakeLabel(env))}），调用失败时自动改用本地规则。识别结果需核对后才会保存。</p>`
+    : '<p class="notice">未配置 AI 识别，本次使用本地文字规则提取。识别结果需核对后才会保存。</p>';
   if (category==="device"&&id==="new"&&request.method==="GET"&&url.searchParams.get("mode")!=="manual") {
     return render(hero("新增设备",backLink(base,"返回电子设备"),moduleEntry(base+"/new?mode=quick",base+"/new?mode=manual",url.searchParams.get("mode")==="quick"?"quick":""))+
-      (url.searchParams.get("mode")==="quick"?`<form class="panel editor component-form" method="post" action="${base}/new"><input type="hidden" name="operation" value="deviceExtract"><input type="hidden" name="timeZone" data-intake-zone><label>描述设备<textarea name="text" rows="4" maxlength="2000" required placeholder="昨天买了一台笔记本，花了4999元，型号是A1，配置16GB，购买渠道是官方商城。"></textarea></label><div class="food-toolbar"><button class="btn btn-primary">提取信息</button>${entryButton(base,"取消","secondary")}</div></form>`:'<p class="notice">请选择快速录入或手动录入。</p>'));
+      (url.searchParams.get("mode")==="quick"?quickHint+`<form class="panel editor component-form" method="post" action="${base}/new"><input type="hidden" name="operation" value="deviceExtract"><input type="hidden" name="timeZone" data-intake-zone><label>描述设备<textarea name="text" rows="4" maxlength="2000" required placeholder="昨天买了一台笔记本，花了4999元，型号是A1，配置16GB，购买渠道是官方商城。"></textarea></label><div class="food-toolbar"><button class="btn btn-primary">提取信息</button>${entryButton(base,"取消","secondary")}</div></form>`:'<p class="notice">请选择快速录入或手动录入。</p>'));
   }
   if(category==="subscription"&&id==="new"&&request.method==="GET"&&url.searchParams.get("mode")!=="manual") {
     return render(hero("新增订阅",backLink(base,"返回会员订阅"),moduleEntry(base+"/new?mode=quick",base+"/new?mode=manual",url.searchParams.get("mode")==="quick"?"quick":""))+
-    (url.searchParams.get("mode")==="quick"?`<form class="panel editor component-form" method="post" action="${base}/new"><input type="hidden" name="operation" value="subscriptionExtract"><input type="hidden" name="timeZone" data-intake-zone><label>描述订阅<textarea name="text" rows="4" maxlength="2000" required placeholder="今天开通了音乐会员，每月25元，自动续费，下次扣费日期2027年1月20日。"></textarea></label><div class="food-toolbar"><button class="btn btn-primary">提取信息</button>${entryButton(base,"取消","secondary")}</div></form>`:'<p class="notice">请选择快速录入或手动录入。</p>'));
+    (url.searchParams.get("mode")==="quick"?quickHint+`<form class="panel editor component-form" method="post" action="${base}/new"><input type="hidden" name="operation" value="subscriptionExtract"><input type="hidden" name="timeZone" data-intake-zone><label>描述订阅<textarea name="text" rows="4" maxlength="2000" required placeholder="今天开通了音乐会员，每月25元，自动续费，下次扣费日期2027年1月20日。"></textarea></label><div class="food-toolbar"><button class="btn btn-primary">提取信息</button>${entryButton(base,"取消","secondary")}</div></form>`:'<p class="notice">请选择快速录入或手动录入。</p>'));
   }
   if (request.method === "GET") {
     return editor(category, id, existing ?? {}, details ?? {}, {
@@ -267,13 +279,16 @@ async function record(request, db, category, id, url) {
   const operation = value("operation");
   const now = new Date().toISOString();
   if(category==="subscription"&&id==="new"&&operation==="subscriptionExtract") {
-    try {const parsed=subscriptionExtract(value("text"),intakeClock(intakeZone(value("timeZone"))).day);return editor(category,id,parsed.item,parsed.detail,{subscriptionReview:true});}
+    try {
+      const parsed=await subscriptionIntakeExtract(env,value("text"),intakeClock(intakeZone(value("timeZone"))).day);
+      return editor(category,id,parsed.item,parsed.detail,{subscriptionReview:true,subscriptionSource:parsed.source,subscriptionFallback:parsed.fallback});
+    }
     catch(error){return render(hero("请检查订阅描述",escape(error.message),link(base+"/new?mode=quick","返回快速录入","button")),400);}
   }
   if (category==="device"&&id==="new"&&operation==="deviceExtract") {
     try {
-      const parsed=deviceExtract(value("text"),intakeClock(intakeZone(value("timeZone"))).day);
-      return editor(category,id,parsed.item,parsed.detail,{deviceReview:true});
+      const parsed=await deviceIntakeExtract(env,value("text"),intakeClock(intakeZone(value("timeZone"))).day);
+      return editor(category,id,parsed.item,parsed.detail,{deviceReview:true,deviceSource:parsed.source,deviceFallback:parsed.fallback});
     } catch(error) { return render(hero("请检查设备描述",escape(error.message),link(base+"/new?mode=quick","返回快速录入","button")),400); }
   }
   if (category==="device" && operation==="deviceMaintenance") {
@@ -352,6 +367,11 @@ export default {
         return new Response(browser, { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" } });
       }
       if (env.LOCAL_INSTANCE === true) {
+        // Local accounts are opt-in: tests and plain local runs keep the fixed local-device
+        // identity, while the packaged app enables the login gate by default.
+        if (/^(1|true|on|enabled|yes)$/i.test(String(env.LOCAL_ACCOUNTS ?? "").trim())) {
+          return await localAuthRoute(request, env, url);
+        }
         const headers = new Headers(request.headers);
         headers.set("oai-authenticated-user-id", "local-device");
         return await businessRoute(new Request(request, {headers}), env, url, "local-device");
@@ -387,12 +407,12 @@ async function businessRoute(request, env, url, identity) {
   }
   if (url.pathname === "/items/clothing" || url.pathname.startsWith("/items/clothing/")) {
     await seedDemo();
-    return wardrobeRoute(request,env.DB,url);
+    return await wardrobeRoute(request,env,url);
   }
   const [, category, id] = url.pathname.match(/^\/items\/([a-z]+)(?:\/([a-z0-9-]+))?\/?$/) ?? [];
   if (category && Object.hasOwn(catalog, category)) {
     await seedDemo();
-    if (id) return await record(request, env.DB, category, id, url);
+    if (id) return await record(request, env, category, id, url);
     if (request.method === "GET") return await list(env.DB, category, url);
   }
   return render(hero("找不到这个页面", link("/", "返回总览")), 404);

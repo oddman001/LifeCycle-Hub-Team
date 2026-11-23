@@ -213,7 +213,8 @@ document.querySelectorAll("[data-food-expiry-mode]").forEach(select => {
   preview.setAttribute("role","status");
   select.closest("label").after(preview);
   const update = () => {
-    for (const [field, visible] of [["expiresOn",select.value==="date"],["shelfLifeDays",select.value==="duration"]]) {
+    const duration = select.value === "duration";
+    for (const [field, visible] of [["expiresOn",select.value==="date"],["shelfLifeDays",duration],["shelfLifeBase",duration]]) {
       const input = form.elements.namedItem(prefix+field);
       if (!input || input instanceof RadioNodeList) continue;
       input.closest("label").hidden = !visible;
@@ -221,21 +222,27 @@ document.querySelectorAll("[data-food-expiry-mode]").forEach(select => {
       input.required = visible && field==="shelfLifeDays";
     }
     const production = form.elements.namedItem(prefix+"producedOn");
-    if (production && !(production instanceof RadioNodeList)) production.required = select.value==="duration";
+    const purchased = form.elements.namedItem(prefix+"purchasedOn");
+    const base = form.elements.namedItem(prefix+"shelfLifeBase");
+    const baseValue = base instanceof RadioNodeList || !base ? "production" : base.value;
+    if (production && !(production instanceof RadioNodeList)) production.required = duration && baseValue !== "purchase";
     const days=form.elements.namedItem(prefix+"shelfLifeDays");
     preview.textContent="";
-    if(select.value==="duration"){
-      const date=new Date(production?.value+"T12:00:00Z");
+    if(duration){
+      const source = baseValue === "purchase" ? purchased : production;
+      const date=new Date((source && !(source instanceof RadioNodeList) ? source.value : "")+"T12:00:00Z");
       const count=Number(days?.value);
       if(Number.isFinite(date.getTime()) && Number.isInteger(count) && count>0 && count<=36500){
         date.setUTCDate(date.getUTCDate()+count);
         preview.textContent="计算到期日期："+date.toISOString().slice(0,10);
-      }else preview.textContent="填写生产日期和保质期后自动计算到期日期。";
+      }else preview.textContent="填写"+(baseValue === "purchase" ? "购买日期" : "生产日期")+"和保质期后自动计算到期日期。";
     }
   };
   select.addEventListener("change",update);
-  form.elements.namedItem(prefix+"producedOn")?.addEventListener("input",update);
-  form.elements.namedItem(prefix+"shelfLifeDays")?.addEventListener("input",update);
+  for (const field of ["producedOn","purchasedOn","shelfLifeBase","shelfLifeDays"]) {
+    const input = form.elements.namedItem(prefix+field);
+    if (input && !(input instanceof RadioNodeList)) input.addEventListener("input",update);
+  }
   update();
 });
 

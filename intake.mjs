@@ -39,7 +39,7 @@ function intakeLocation(line,locations) {
 function intakeRuleRows(text,locations,clock) {
   const rows=foodTextCandidates(text,locations,clock.day).map((row)=>{
     const line=row.source;
-    const isPurchase=foodPurchaseLead.test(intakeCleanSpeech(line));
+    const isPurchase=foodPurchaseLead.test(intakeCleanSpeech(line)) || foodPurchaseVerb.test(line);
     const count=line.match(/(?:改成|改为|减少|吃了|喝了)\s*([\d.]+|[一二两三四五六七八九十]+)\s*(千克|公斤|毫升|斤|克|升|个|盒|袋|瓶|罐)/);
     const amount=count?(/^[0-9]/.test(count[1])?Number(count[1]):numberOf(count[1])):row.amount;
     const place=intakeLocation(line,locations);
@@ -47,7 +47,11 @@ function intakeRuleRows(text,locations,clock) {
     if (parsed && !isPurchase) {
       const intent=/改[成为]/.test(line)?"adjust":/吃完|喝完/.test(line)?"consumeAll":
         /开封/.test(line)?"open":/吃了|喝了/.test(line)?"consume":"move";
-      return {intent,name:parsed[1].trim(),amount:Number.isFinite(amount)?amount:null,unit:count?.[2]||"",locationId:place};
+      // 口语里会先交代原来的位置（"把番茄炒蛋从厨房储物柜移到冰箱冷藏室"），
+      // 名称只取来源位置之前的部分，目标位置也以"移到/放到"之后的地点为准。
+      const moveTarget=line.match(/(?:移到|转移到|搬到|放到|放进|放入)(.+)$/);
+      const moved=intent==="move"&&moveTarget?intakeLocation(moveTarget[1],locations):"";
+      return {intent,name:parsed[1].replace(/\s*从.*$/,"").trim(),amount:Number.isFinite(amount)?amount:null,unit:count?.[2]||"",locationId:moved||place};
     }
     if (!isPurchase && /还有多少|查(?:看|询)|还剩多少/.test(line)) {
       return {intent:"query",name:line.replace(/^(查看|查询|冰箱里有)/,"").replace(/还有多少.*$|还剩多少.*$/,"").trim(),locationId:place};
@@ -96,28 +100,30 @@ function intakeMatch(candidate,profiles) {
   return {preferred:precise.length===1?precise[0].id:"",options:candidates.slice(0,12)};
 }
 function intakeEntry(hasAI, message="", status=200, context={}) {
-  const title=context.title||foodBack("快速记录","提供照片、录音或一句话，核对后保存。",moduleEntry(foodRoot+"/intake",foodRoot+"/new","quick"));
+  const media=hasAI&&context.media===true;
+  const title=context.title||foodBack("快速记录","输入一句话，核对后保存。",moduleEntry(foodRoot+"/intake",foodRoot+"/new","quick"));
   const cancelHref=context.cancelHref||foodRoot;
   const placeholder=context.placeholder||"昨天买了两斤苹果，放在冰箱冷藏室";
   const tz='<input type="hidden" name="timeZone" data-intake-zone value="Asia/Shanghai">';
   const form=(method,content,button)=>`<form class="panel editor component-form" method="post" enctype="multipart/form-data">
     ${intakeHidden("method",method)}${tz}<fieldset>${content}</fieldset><div class="food-toolbar"><button class="btn btn-primary" data-intake-submit>${button}</button>${entryButton(cancelHref,"取消","secondary")}</div></form>`;
   return render(title+(message?`<p class="notice error" role="alert">${escape(message)}</p>`:"")+
-    (!hasAI?'<p class="notice">AI 服务未配置。可以使用文字规则提取或手动录入。</p>':"")+
+    (!hasAI?'<p class="notice">AI 服务未配置。可以使用文字规则提取或手动录入。</p>':
+      media?"":`<p class="notice">已启用文字 AI 识别${context.label?`（${escape(context.label)}）`:""}；照片和语音识别需要另行开启。</p>`)+
     `<section><div class="section-heading"><h2>文字</h2></div>${form("text",
       `<label class="wide">描述采购或库存变化<textarea name="text" rows="4" maxlength="3000" placeholder="${escape(placeholder)}" required></textarea></label>`,
       "提取信息")}</section>
     <div class="food-edit-grid"><section><div class="section-heading"><h2>拍照</h2></div>
-      ${hasAI?form("photo",'<label class="wide">用手机拍摄<input name="photos" type="file" accept="image/*" capture="environment"></label><label class="wide">或选择包装和标签照片<input name="photos" type="file" accept="image/*" multiple></label><p class="wide food-muted">最多 4 张。较大照片会在设备上尽量压缩至 2 MB。图片将发送到 OpenAI 识别。</p><small class="wide" data-photo-status role="status"></small>',"识别照片"):'<p>配置 AI 服务后可拍摄和上传照片。</p>'}</section>
+      ${media?form("photo",'<label class="wide">用手机拍摄<input name="photos" type="file" accept="image/*" capture="environment"></label><label class="wide">或选择包装和标签照片<input name="photos" type="file" accept="image/*" multiple></label><p class="wide food-muted">最多 4 张。较大照片会在设备上尽量压缩至 2 MB。图片将发送到 OpenAI 识别。</p><small class="wide" data-photo-status role="status"></small>',"识别照片"):`<p>${hasAI?'当前只识别文字描述，照片识别未开启。':'配置 AI 服务并设置 AI_MEDIA=1 后可拍摄和上传照片。'}</p>`}</section>
     <section><div class="section-heading"><h2>语音</h2></div>
-      ${hasAI?form("voice",'<label class="wide">录音或选择音频文件<input name="audio" data-audio-file type="file" accept="audio/*,.webm,.m4a,.mp4" required></label><div class="wide food-toolbar"><button class="button secondary" type="button" data-start-recording>开始录音</button><button class="button secondary" type="button" data-stop-recording disabled>停止录音</button><small data-recording-status role="status">最长 90 秒</small></div><p class="wide food-muted">音频不超过 10 MB，将发送到 OpenAI 转写。</p>',"转写并提取"):'<p>配置 AI 服务后可录音和上传音频。</p>'}</section></div>`,status);
+      ${media?form("voice",'<label class="wide">录音或选择音频文件<input name="audio" data-audio-file type="file" accept="audio/*,.webm,.m4a,.mp4" required></label><div class="wide food-toolbar"><button class="button secondary" type="button" data-start-recording>开始录音</button><button class="button secondary" type="button" data-stop-recording disabled>停止录音</button><small data-recording-status role="status">最长 90 秒</small></div><p class="wide food-muted">音频不超过 10 MB，将发送到 OpenAI 转写。</p>',"转写并提取"):`<p>${hasAI?'当前只识别文字描述，语音识别未开启。':'配置 AI 服务并设置 AI_MEDIA=1 后可录音和上传音频。'}</p>`}</section></div>`,status);
 }
 function intakeNormalize(candidate,{locations,categories,clock}) {
   const suggested=Boolean(candidate.shortLife || /牛奶|酸奶|鲜肉|鸡胸肉|熟食|剩菜/.test(candidate.name));
   const systemDate=!foodDate(candidate.purchasedOn);
   const systemTime=!candidate.purchaseTime && (systemDate || candidate.purchasedOn===clock.day);
   const purchaseDate=systemDate?clock.day:candidate.purchasedOn;
-  const base=candidate.producedOn;
+  const base=candidate.shelfLifeBase==="purchase" ? purchaseDate : candidate.producedOn;
   const computed=candidate.shelfLifeBase&&candidate.shelfLifeDays&&foodDate(base)?foodAddDays(base,candidate.shelfLifeDays):"";
   const explicit=foodDate(candidate.expiresOn);
   const missingBase=candidate.shelfLifeBase&&!computed&&!explicit;
@@ -126,7 +132,7 @@ function intakeNormalize(candidate,{locations,categories,clock}) {
     producedOn:foodDate(candidate.producedOn)?candidate.producedOn:"",
     expiresOn:explicit?candidate.expiresOn:foodDate(computed)?computed:"",
     expirySource:explicit?candidate.expirySource:computed?"shelf":"",
-    shelfLifeBase:explicit?"":candidate.shelfLifeDays?"production":"",
+    shelfLifeBase:explicit?"":candidate.shelfLifeDays?(candidate.shelfLifeBase==="purchase"?"purchase":"production"):"",
     dateEvidence:missingBase?[candidate.dateEvidence,"请补充生产日期，系统会自动计算到期日期。"].filter(Boolean).join(" "):candidate.dateEvidence,
     locationId:locations.some((r)=>r.id===candidate.locationId)?candidate.locationId:"unassigned",
     categoryId:categories.some((r)=>r.id===candidate.categoryId)?candidate.categoryId:"",
@@ -146,7 +152,15 @@ function intakeResolveDates(candidate,text,all,clock,method) {
     : matching.length===1&&purchases.filter((r)=>intakeNameKey(r.name)===name).length===1 ? matching[0] : "";
   const parsed=resolveFoodDates(source,clock.day);
   if (!source && /到期|过期|保质期/.test(text)) parsed.dateEvidence="无法确定日期对应哪个食品，请逐条核对。";
-  return {...candidate,...parsed,producedOn:parsed.producedOn||candidate.producedOn};
+  // Keep values the model already extracted when the sentence cannot be matched back to a food
+  // name; otherwise an unattributed sentence would erase a stated expiry date or shelf life.
+  return {...candidate,
+    expiresOn:parsed.expiresOn||candidate.expiresOn||"",
+    expirySource:parsed.expirySource||candidate.expirySource||"",
+    shelfLifeDays:parsed.shelfLifeDays??candidate.shelfLifeDays??null,
+    shelfLifeBase:parsed.shelfLifeBase||candidate.shelfLifeBase||"",
+    producedOn:parsed.producedOn||candidate.producedOn||"",
+    dateEvidence:[parsed.dateEvidence,candidate.dateEvidence].filter(Boolean).join(" ")};
 }
 function intakeBatchOptions(candidate,rows) {
   const name=intakeNameKey(candidate.name);
@@ -335,8 +349,9 @@ async function intakeApplyAction(db,form,draft,candidates,rows) {
   } catch { throw new IntakeError("更新失败。请检查是否已经确认过该条操作。",409); }
 }
 async function foodIntake(request,env,form) {
-  const db=env.DB, hasAI=Boolean(env.OPENAI_API_KEY?.trim());
-  if (!form) return intakeEntry(hasAI);
+  const db=env.DB, hasAI=intakeConfigured(env), media=intakeMediaEnabled(env);
+  const provider={media,label:intakeLabel(env)};
+  if (!form) return intakeEntry(hasAI,"",200,provider);
   try {
     const operation=foodValue(form,"operation");
     const [profiles,locations,categories]=await foodReferenceData(db);
@@ -352,6 +367,7 @@ async function foodIntake(request,env,form) {
     const method=foodValue(form,"method")||"text";
     if (!["photo","voice","text"].includes(method)) throw new IntakeError("录入方式无效。");
     if (method!=="text"&&!hasAI) return intakeEntry(false,"AI 服务未配置，可先使用文字或手动录入。",503);
+    if (method!=="text"&&!media) return intakeEntry(hasAI,"当前只启用文字 AI 识别，照片和语音录入未开启。",503,provider);
     const timeZone=intakeZone(foodValue(form,"timeZone"));
     const clock=intakeClock(timeZone);
     let text=foodValue(form,"text");
@@ -369,7 +385,7 @@ async function foodIntake(request,env,form) {
     const rows=raw.some((r)=>r.intent!=="purchase")?await allFoodRows(db):[];
     return intakeReview(draft,candidates,profiles,locations,categories,rows,method==="voice"?text:"");
   } catch (error) {
-    if (error instanceof IntakeError) return intakeEntry(hasAI,error.message,error.status);
+    if (error instanceof IntakeError) return intakeEntry(hasAI,error.message,error.status,provider);
     throw error;
   }
 }
