@@ -2,8 +2,8 @@
 //
 // The cloud demo gate (demo-auth.mjs) exists so invited testers get isolated workspaces.
 // This local gate is different on purpose:
-//   * it is opt-in through LOCAL_ACCOUNTS=on, so the test suite and `standalone.mjs --local`
-//     without accounts keep working exactly as before;
+//   * it is enabled by default in the packaged app; set LOCAL_ACCOUNTS=off to restore the
+//     old account-free local mode (the tests pass LOCAL_ACCOUNTS=off explicitly);
 //   * it serves http://127.0.0.1, so the cookie cannot be a `__Host-`/`Secure` cookie;
 //   * every account on this machine shares one data directory. Sharing is deliberate: the
 //     existing local database keeps working, and the account is a login identity rather than

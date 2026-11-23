@@ -163,13 +163,15 @@ function wardrobeMergeTags(left, right) {
 }
 function wardrobeFromAI(parsed, source, day) {
   const field = (key) => wardrobeAIText(parsed?.[key], key === "name" ? 120 : 240);
+  const grounded = (value) => { const text = wardrobeAIText(value,240); return text && source.includes(text) ? text : ""; };
+  const groundedTags = (key) => wardrobeAITags(key,parsed?.[key]).split("，").filter((tag) => tag && source.includes(tag)).join("，");
   const kind = wardrobeChoices.kind.includes(field("kind")) ? field("kind") : "";
-  const frequency = wardrobeChoices.frequency.includes(field("frequency")) ? field("frequency") : "";
+  const frequency = wardrobeChoices.frequency.includes(field("frequency")) && source.includes(field("frequency")) ? field("frequency") : "";
   const data = {
     kind, frequency,
-    brand:field("brand"), size:wardrobeAIText(parsed?.size,60), color:wardrobeAIText(parsed?.color,60),
-    location:wardrobeAIText(parsed?.location,120),
-    material:wardrobeAITags("material",parsed?.material), weather:wardrobeAITags("weather",parsed?.weather), care:wardrobeAITags("care",parsed?.care),
+    brand:grounded(parsed?.brand), size:grounded(wardrobeAIText(parsed?.size,60)), color:grounded(wardrobeAIText(parsed?.color,60)),
+    location:grounded(parsed?.location),
+    material:wardrobeAITags("material",parsed?.material), weather:groundedTags("weather"), care:wardrobeAITags("care",parsed?.care),
   };
   const numericPrice = typeof parsed?.price === "number" && Number.isFinite(parsed.price) && parsed.price >= 0
     ? String(Math.round(parsed.price * 100) / 100) : "";

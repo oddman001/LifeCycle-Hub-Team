@@ -123,12 +123,26 @@ async function intakeStructured(env,{name,schema,instructions,model,text,photos=
     throw new IntakeError("当前配置的识别接口不支持图片。请改用文字录入，或改用支持图片的模型。",422);
   }
   if (intakeMode(env)==="chat") {
-    const body = {
-      model:intakeModel(env,model),temperature:0,response_format:{type:"json_object"},
+    // 智谱 GLM 的 json_object 不校验 schema，会自行发明字段；文字类模块改用强制 function call，
+    // 衣柜字段多、提示长，GLM-4-Flash 在强制工具调用时会反复输出同一段 JSON，因此衣柜走 json_object。
+    const useTool = intakeProviderName(env)==="zhipu" && name!=="wardrobe_intake";
+    const body = useTool ? {
+      model:intakeModel(env,model),temperature:0,max_tokens:Math.min(maxTokens,600),
+      messages:[{role:"system",content:instructions+"\n只通过 "+name+" 工具输出结构化结果，不要输出解释、注释或代码块。"},
+        {role:"user",content:text}],
+      tools:[{type:"function",function:{name,description:"提交识别结果",parameters:schema}}],
+      tool_choice:{type:"function",function:{name}},
+    } : {
+      model:intakeModel(env,model),temperature:0,max_tokens:intakeProviderName(env)==="zhipu"?800:maxTokens,response_format:{type:"json_object"},
       messages:[{role:"system",content:instructions+"\n只输出一个 JSON 对象，不要输出解释、注释或代码块。"},
         {role:"user",content:text}],
     };
     const reply = await intakeOpenAI(env,"/chat/completions",JSON.stringify(body),true);
+    if (useTool) {
+      const message = reply?.choices?.[0]?.message;
+      const args = message?.tool_calls?.[0]?.function?.arguments;
+      return intakeParseJSON(args ?? message?.content);
+    }
     return intakeParseJSON(reply?.choices?.[0]?.message?.content);
   }
   const body = {
